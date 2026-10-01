@@ -1,0 +1,235 @@
+/* ============================================================
+   BookNest — Professional styling (Bootstrap ke upar)
+   Sections: 1. Base  2. 3D Login  3. Shop  4. Checkout
+   ============================================================ */
+
+/* ---------- 1. BASE ---------- */
+body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #f4f6fb; color: #1a1a2e; }
+
+.btn-glow {
+  background: linear-gradient(135deg, #1f6f54, #2ea37a);
+  border: none; color: #fff; font-weight: 700;
+  box-shadow: 0 8px 24px rgba(31, 111, 84, .35);
+  transition: transform .15s, box-shadow .15s;
+}
+.btn-glow:hover { color: #fff; transform: translateY(-2px); box-shadow: 0 12px 30px rgba(31, 111, 84, .45); }
+
+/* ---------- 2. 3D LOGIN PAGE ---------- */
+.auth-scene {
+  min-height: 100vh; position: relative; overflow: hidden;
+  perspective: 1400px;
+  background:
+    radial-gradient(1000px 520px at 18% 8%, rgba(47, 93, 98, .9), transparent 60%),
+    radial-gradient(820px 520px at 88% 92%, rgba(123, 45, 38, .75), transparent 55%),
+    radial-gradient(600px 400px at 70% 20%, rgba(91, 58, 142, .5), transparent 60%),
+    linear-gradient(135deg, #0c1a20, #1d3238 55%, #0c1a20);
+}
+.auth-glow {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(600px 300px at 50% 110%, rgba(46, 163, 122, .25), transparent 70%);
+}
+/* 3D me tairti kitabein */
+.float-book {
+  position: absolute; width: 110px; border-radius: 8px;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, .55);
+  transform: rotateY(-20deg) rotateX(8deg);
+  animation: floaty 7s ease-in-out infinite;
+  opacity: .92; z-index: 1;
+}
+.fb1 { left: 6%;  top: 12%; animation-delay: 0s; }
+.fb2 { left: 12%; bottom: 10%; width: 90px; animation-delay: -2s; }
+.fb3 { right: 8%; top: 16%; width: 120px; animation-delay: -4s; }
+.fb4 { right: 14%; bottom: 12%; width: 84px; animation-delay: -1s; }
+.fb5 { left: 45%; top: 6%; width: 76px; animation-delay: -3s; opacity: .7; }
+.fb6 { right: 42%; bottom: 6%; width: 96px; animation-delay: -5s; opacity: .75; }
+@keyframes floaty {
+  0%, 100% { transform: rotateY(-20deg) rotateX(8deg) translateY(0); }
+  50%      { transform: rotateY(-8deg) rotateX(12deg) translateY(-28px); }
+}
+/* Sheeshe jaisa card — mouse par 3D tilt */
+.glass-card {
+  width: 100%; max-width: 940px;
+  background: rgba(255, 255, 255, .07);
+  backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px);
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 22px; color: #fff;
+  box-shadow: 0 40px 90px rgba(0, 0, 0, .5);
+  transition: transform .3s ease;
+  transform-style: preserve-3d;
+}
+.auth-brand-pane {
+  background: linear-gradient(160deg, rgba(47, 93, 98, .85), rgba(20, 38, 63, .9));
+  border-radius: 22px 0 0 22px;
+  padding: 3rem 2.5rem; flex-direction: column; justify-content: center;
+}
+.brand-logo { font-size: 52px; margin-bottom: 8px; filter: drop-shadow(0 8px 16px rgba(0,0,0,.4)); }
+.brand-points { list-style: none; padding: 0; margin: 1.5rem 0 0; }
+.brand-points li { padding: 7px 0; opacity: .92; }
+.brand-points span { margin-right: 8px; }
+.auth-sub { color: rgba(255, 255, 255, .6); }
+/* Glass card ke andar inputs */
+.glass-card .form-label { color: rgba(255, 255, 255, .85); font-weight: 600; }
+.glass-card .form-control {
+  background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .22);
+  color: #fff; border-radius: 12px;
+}
+.glass-card .form-control::placeholder { color: rgba(255, 255, 255, .4); }
+.glass-card .form-control:focus {
+  background: rgba(255, 255, 255, .14); border-color: #2ea37a; color: #fff;
+  box-shadow: 0 0 0 .25rem rgba(46, 163, 122, .25);
+}
+.auth-tabs .nav-link { color: rgba(255, 255, 255, .7); font-weight: 600; border-radius: 12px; }
+.auth-tabs .nav-link.active { background: linear-gradient(135deg, #1f6f54, #2ea37a); color: #fff; }
+.glass-card .text-danger { color: #ff9d9d !important; }
+
+/* ---------- 3. SHOP ---------- */
+.shop-nav {
+  background: linear-gradient(135deg, #14263f, #1d3a3d) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, .25);
+}
+.nav-btn { color: #fff; border: 1px solid rgba(255, 255, 255, .25); font-weight: 600; }
+.nav-btn:hover { color: #fff; background: rgba(255, 255, 255, .12); border-color: rgba(255, 255, 255, .4); }
+
+.hero {
+  background: linear-gradient(120deg, #14263f, #2f5d62 70%, #1f6f54);
+  border-radius: 20px; color: #fff;
+  padding: 2.2rem 2.5rem;
+  display: flex; align-items: center; justify-content: space-between;
+  box-shadow: 0 16px 40px rgba(20, 38, 63, .3);
+  overflow: hidden; position: relative;
+}
+.hero-book {
+  width: 110px; border-radius: 8px; flex-shrink: 0;
+  transform: rotateY(-18deg) rotateX(6deg);
+  box-shadow: -18px 24px 40px rgba(0, 0, 0, .45);
+}
+.search-bar { border-radius: 14px; border: 2px solid #e5e7eb; }
+.search-bar:focus { border-color: #2ea37a; box-shadow: 0 0 0 .25rem rgba(46, 163, 122, .15); }
+
+/* Book cards — 3D lift on hover */
+.book-card {
+  cursor: pointer; border: none; border-radius: 16px; overflow: hidden;
+  transition: transform .2s, box-shadow .2s;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .08);
+}
+.book-card:hover { transform: translateY(-8px); box-shadow: 0 20px 44px rgba(0, 0, 0, .18); }
+.book-card .card-img-top { height: 230px; object-fit: cover; }
+.book-cover-img { object-fit: cover; display: block; }
+.book-cover { /* fallback jab photo na ho */
+  height: 180px; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 64px; font-weight: 800;
+}
+.discount-badge {
+  position: absolute; top: 10px; left: 10px; z-index: 2;
+  background: linear-gradient(135deg, #e63946, #c1121f); color: #fff;
+  font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 20px;
+  box-shadow: 0 4px 10px rgba(230, 57, 70, .4);
+}
+.stars { color: #d9930d; font-weight: 700; }
+.price { color: #1f6f54; font-weight: 800; font-size: 1.15rem; }
+
+/* Cart */
+.cart-line { border: none; border-radius: 14px; box-shadow: 0 3px 12px rgba(0, 0, 0, .07); }
+.qty-btn { width: 32px; height: 32px; border-radius: 50%; padding: 0; font-weight: 700; }
+
+/* ---------- 4. CHECKOUT ---------- */
+.checkout-card { border: none; border-radius: 18px; box-shadow: 0 8px 28px rgba(0, 0, 0, .1); }
+.pay-methods { display: flex; flex-direction: column; gap: 10px; }
+.pay-card {
+  display: flex; align-items: center; gap: 12px;
+  border: 2px solid #e5e7eb; border-radius: 14px; padding: 12px 14px;
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+.pay-card:hover { border-color: #b9c2cf; }
+.pay-card:has(input:checked) { border-color: #1f6f54; background: #f0faf6; box-shadow: 0 4px 14px rgba(31, 111, 84, .15); }
+.pay-card input { width: 18px; height: 18px; accent-color: #1f6f54; }
+.pay-emoji { font-size: 28px; }
+
+/* Success */
+.success-card { max-width: 480px; border: none; border-radius: 20px; box-shadow: 0 16px 44px rgba(0, 0, 0, .12); }
+.success-tick {
+  width: 84px; height: 84px; margin: 0 auto 16px;
+  background: linear-gradient(135deg, #1f6f54, #2ea37a); color: #fff;
+  font-size: 44px; font-weight: 800; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 12px 30px rgba(31, 111, 84, .4);
+  animation: pop .5s ease;
+}
+@keyframes pop { 0% { transform: scale(.4); } 70% { transform: scale(1.12); } 100% { transform: scale(1); } }
+
+/* Orders */
+.order-card { border: none; border-radius: 16px; box-shadow: 0 4px 16px rgba(0, 0, 0, .08); }
+
+/* Book modal */
+.book-modal { border: none; border-radius: 20px; overflow: hidden; }
+
+.shop-footer { text-align: center; padding: 28px; color: #8a93a6; font-size: 14px; }
+
+/* Mobile par floating books halki */
+@media (max-width: 768px) {
+  .float-book { width: 70px; opacity: .5; }
+  .fb5, .fb6 { display: none; }
+  .hero-book { width: 80px; }
+}
+
+/* ---------- 5. NAVBAR ICONS (search, wishlist, profile, cart) ---------- */
+.icon-btn {
+  background: transparent; border: none; color: #fff;
+  width: 42px; height: 42px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.icon-btn:hover { background: rgba(255, 255, 255, .15); color: #fff; }
+.icon-btn svg { width: 24px; height: 24px; }
+.icon-badge {
+  position: absolute; top: 2px; right: 0;
+  font-size: 10px; padding: 3px 6px;
+}
+
+/* ---------- 6. WISHLIST HEART (book card par) ---------- */
+.like-btn {
+  position: absolute; top: 10px; right: 10px; z-index: 3;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: rgba(255, 255, 255, .95); border: none;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .2);
+  transition: transform .15s;
+}
+.like-btn:hover { transform: scale(1.15); }
+.like-btn svg { width: 20px; height: 20px; fill: none; stroke: #555; stroke-width: 2; }
+.like-btn.liked svg { fill: #e63946; stroke: #e63946; }
+
+/* ---------- 7. PROFILE ---------- */
+.profile-avatar {
+  width: 84px; height: 84px; border-radius: 50%;
+  background: linear-gradient(135deg, #1f6f54, #2ea37a); color: #fff;
+  font-size: 38px; font-weight: 800;
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto 12px;
+}
+
+/* ---------- 8. BIG RED FOOTER ---------- */
+.site-footer {
+  background: linear-gradient(135deg, #d42a22, #b01e18);
+  color: #fff; padding: 48px 0 0; margin-top: 48px;
+}
+.site-footer h6 { font-weight: 800; font-size: 1.15rem; margin-bottom: 16px; }
+.footer-link {
+  display: block; background: none; border: none; color: rgba(255, 255, 255, .92);
+  padding: 5px 0; text-align: left; font-size: 15px;
+}
+.footer-link:hover { color: #fff; text-decoration: underline; }
+.social-row { display: flex; gap: 12px; }
+.social-btn {
+  width: 42px; height: 42px; border-radius: 50%;
+  background: #fff; color: #d42a22;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; text-decoration: none; font-size: 17px;
+  transition: transform .15s;
+}
+.social-btn:hover { transform: scale(1.12); color: #b01e18; }
+.footer-bottom {
+  border-top: 1px solid rgba(255, 255, 255, .25);
+  margin-top: 32px; padding: 16px 0;
+  text-align: center; font-size: 14px; color: rgba(255, 255, 255, .85);
+}
