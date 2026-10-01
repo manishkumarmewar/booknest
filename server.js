@@ -265,7 +265,9 @@ app.get('/api/orders', requireAuth, (req, res) => {
 // ---------------- Admin Panel (dukandaar ke liye) ----------------
 // Customer ka data dekhne ke liye: browser me /admin.html kholo.
 // ADMIN_PASSWORD ko apne hisaab se badal lo (koi bhi strong password rakho).
-const ADMIN_PASSWORD = 'admin123';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || (
+  process.env.NODE_ENV === 'production' ? null : 'admin123'
+);
 const adminSessions = new Set();
 
 function requireAdmin(req, res, next) {
@@ -276,7 +278,7 @@ function requireAdmin(req, res, next) {
 }
 
 app.post('/api/admin/login', (req, res) => {
-  if (!req.body || req.body.password !== ADMIN_PASSWORD)
+  if (!ADMIN_PASSWORD || !req.body || req.body.password !== ADMIN_PASSWORD)
     return res.status(401).json({ error: 'Wrong admin password' });
   const token = crypto.randomBytes(32).toString('hex');
   adminSessions.add(token);

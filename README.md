@@ -61,8 +61,9 @@ Admin panel me dikhega:
 
 ## Zaroori notes
 
-- 🔑 **Admin password badalna:** `server.js` me sabse neeche `ADMIN_PASSWORD = 'admin123'`
-  likha hai — use apna strong password kar do, phir server restart karo.
+- 🔑 **Admin password:** Local testing ke liye default `admin123` hai. Production me
+  `ADMIN_PASSWORD` environment variable ko strong password se set karo; bina iske
+  production admin login disabled rahega.
 - 📞 **Apna phone number:** `public/index.html` me `APNA NUMBER YAHAN` dhoondo —
   2 jagah demo number `+91 98765 43210` hai, apna asli number likh do.
 - 🔒 **Passwords kabhi visible nahi hote** — na admin panel me, na kahin.
