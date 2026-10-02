@@ -1,8 +1,15 @@
 // ============================================================
 // BookNest — Server (Node.js + Express)
 // Real login/signup with secure password hashing (scrypt),
-// Local JSON or PostgreSQL database, cart + orders API, admin panel API.
-// Run:  npm install   then   node server.js
+// cart + orders API, admin panel API.
+//
+// DATA STORAGE (2 tareeke — automatic select):
+//   1. DATABASE_URL env var set hai  →  PostgreSQL (Render par
+//      permanent storage — restart/redeploy par data NAHI udega)
+//   2. DATABASE_URL nahi hai         →  db.json file (localhost
+//      par chalane ke liye, pehle jaisa)
+//
+// Run (localhost):  npm install   then   node server.js
 // Open: http://localhost:3000
 // Admin: http://localhost:3000/admin.html  (password: admin123)
 // ============================================================
@@ -11,13 +18,11 @@ const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'db.json');
-const DATABASE_URL = process.env.DATABASE_URL;
-const dbPool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, max: 1 }) : null;
+const DATABASE_URL = process.env.DATABASE_URL || '';
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -50,90 +55,227 @@ function seedBooks() {
   ];
 }
 
-// ---------------- JSON database ----------------
-function createEmptyDb() {
-  return { users: [], sessions: [], carts: {}, orders: [], books: seedBooks() };
-}
+// ============================================================
+// DATA LAYER — dono backends ka same interface (async methods)
+// ============================================================
 
-function ensureDbShape(data) {
-  let changed = false;
-  if (!Array.isArray(data.users)) { data.users = []; changed = true; }
-  if (!Array.isArray(data.sessions)) { data.sessions = []; changed = true; }
-  if (!data.carts || typeof data.carts !== 'object') { data.carts = {}; changed = true; }
-  if (!Array.isArray(data.orders)) { data.orders = []; changed = true; }
-  if (!Array.isArray(data.books)) { data.books = []; changed = true; }
-
-  const have = new Set(data.books.map(book => book.id));
-  for (const book of seedBooks()) {
-    if (!have.has(book.id)) {
-      data.books.push(book);
-      changed = true;
+// ---------- Backend 1: JSON file (localhost ke liye) ----------
+function createJsonStore() {
+  function loadDb() {
+    if (!fs.existsSync(DB_PATH)) {
+      const db = { users: [], sessions: [], carts: {}, orders: [], books: seedBooks() };
+      fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+      return db;
     }
-  }
-  return changed;
-}
-
-function loadLocalDb() {
-  if (!fs.existsSync(DB_PATH)) {
-    const initial = createEmptyDb();
-    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
-    return initial;
-  }
-  const data = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-  if (ensureDbShape(data)) fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
-  return data;
-}
-
-let db;
-let saveQueue = Promise.resolve();
-
-async function saveDb() {
-  if (!dbPool) {
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
-    return;
-  }
-
-  const snapshot = JSON.stringify(db);
-  const write = saveQueue.catch(() => {}).then(() => dbPool.query(
-    `INSERT INTO booknest_state (id, data)
-     VALUES (1, $1::jsonb)
-     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
-    [snapshot]
-  ));
-  saveQueue = write;
-  await write;
-}
-
-async function initializeDb() {
-  if (!dbPool) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('DATABASE_URL is required in production for persistent customer data');
+    const db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+    const have = new Set((db.books || []).map(b => b.id));
+    let added = false;
+    for (const b of seedBooks()) {
+      if (!have.has(b.id)) { db.books.push(b); added = true; }
     }
-    db = loadLocalDb();
-    return;
+    if (added) fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+    return db;
   }
+  let db = loadDb();
+  const save = () => fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
 
-  await dbPool.query(`
-    CREATE TABLE IF NOT EXISTS booknest_state (
-      id SMALLINT PRIMARY KEY CHECK (id = 1),
-      data JSONB NOT NULL
-    )
-  `);
-
-  const result = await dbPool.query('SELECT data FROM booknest_state WHERE id = 1');
-  if (result.rowCount === 0) {
-    db = createEmptyDb();
-    await saveDb();
-    return;
-  }
-
-  db = result.rows[0].data;
-  if (ensureDbShape(db)) await saveDb();
+  return {
+    name: 'json',
+    async init() {},
+    async findUserByLogin(login) {
+      const l = login.toLowerCase();
+      return db.users.find(u => u.email.toLowerCase() === l || u.username.toLowerCase() === l) || null;
+    },
+    async findUserById(id) { return db.users.find(u => u.id === id) || null; },
+    async emailTaken(email) { return db.users.some(u => u.email.toLowerCase() === email.toLowerCase()); },
+    async usernameTaken(username) { return db.users.some(u => u.username.toLowerCase() === username.toLowerCase()); },
+    async createUser(u) { db.users.push(u); db.carts[u.id] = []; save(); },
+    async listUsers() { return db.users; },
+    async createSession(token, userId, expires) {
+      db.sessions = db.sessions.filter(s => s.expires > Date.now());
+      db.sessions.push({ token, userId, expires }); save();
+    },
+    async findSessionUser(token) {
+      const s = db.sessions.find(x => x.token === token && x.expires > Date.now());
+      return s ? (db.users.find(u => u.id === s.userId) || null) : null;
+    },
+    async deleteSession(token) { db.sessions = db.sessions.filter(s => s.token !== token); save(); },
+    async getCart(userId) { return db.carts[userId] || []; },
+    async upsertCartLine(userId, bookId, qty) {
+      const cart = db.carts[userId] || (db.carts[userId] = []);
+      const line = cart.find(x => x.bookId === bookId);
+      if (line) line.qty = Math.min(9, line.qty + qty); else cart.push({ bookId, qty });
+      save(); return cart;
+    },
+    async setCartLine(userId, bookId, qty) {
+      const cart = db.carts[userId] || [];
+      const line = cart.find(x => x.bookId === bookId);
+      if (line) { line.qty = qty; save(); return true; } return false;
+    },
+    async deleteCartLine(userId, bookId) {
+      db.carts[userId] = (db.carts[userId] || []).filter(x => x.bookId !== bookId); save();
+    },
+    async clearCart(userId) { db.carts[userId] = []; save(); },
+    async createOrder(o) { db.orders.push(o); save(); },
+    async listOrdersByUser(userId) { return db.orders.filter(o => o.userId === userId).reverse(); },
+    async listAllOrders() { return db.orders.slice().reverse(); },
+    async countOrdersByUser(userId) { return db.orders.filter(o => o.userId === userId).length; },
+    async listBooks() { return db.books; },
+    async findBook(id) { return db.books.find(b => b.id === id) || null; },
+  };
 }
 
-function asyncHandler(handler) {
-  return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+// ---------- Backend 2: PostgreSQL (Render par permanent data) ----------
+function createPgStore(pool) {
+  const q = (text, params) => pool.query(text, params);
+
+  // DB row → API book object
+  const toBook = r => ({
+    id: r.id, title: r.title, author: r.author, language: r.language,
+    category: r.category, price: r.price, mrp: r.mrp, rating: Number(r.rating),
+    desc: r.description, ...(r.cover ? { cover: r.cover } : {}),
+  });
+  const toUser = r => ({
+    id: r.id, username: r.username, email: r.email, phone: r.phone,
+    passwordHash: r.password_hash, createdAt: r.created_at,
+  });
+  const toOrder = r => ({
+    id: r.id, userId: r.user_id,
+    items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items,
+    subtotal: r.subtotal, delivery: r.delivery, total: r.total,
+    name: r.name, address: r.address, city: r.city, pincode: r.pincode,
+    payment: r.payment, status: r.status, placedAt: r.placed_at,
+  });
+
+  return {
+    name: 'postgres',
+    async init() {
+      await q(`CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, email TEXT UNIQUE NOT NULL,
+        phone TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`);
+      await q(`CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires BIGINT NOT NULL)`);
+      await q(`CREATE TABLE IF NOT EXISTS carts (
+        user_id TEXT NOT NULL, book_id TEXT NOT NULL, qty INT NOT NULL,
+        PRIMARY KEY (user_id, book_id))`);
+      await q(`CREATE TABLE IF NOT EXISTS orders (
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, items JSONB NOT NULL,
+        subtotal INT NOT NULL, delivery INT NOT NULL, total INT NOT NULL,
+        name TEXT NOT NULL, address TEXT NOT NULL, city TEXT NOT NULL,
+        pincode TEXT NOT NULL, payment TEXT NOT NULL, status TEXT NOT NULL,
+        placed_at TIMESTAMPTZ NOT NULL)`);
+      await q(`CREATE TABLE IF NOT EXISTS books (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL,
+        language TEXT NOT NULL, category TEXT NOT NULL, price INT NOT NULL,
+        mrp INT NOT NULL, rating REAL NOT NULL, description TEXT NOT NULL, cover TEXT)`);
+      // Catalog seed / upgrade: jo books nahi hain wo jod do
+      for (const b of seedBooks()) {
+        await q(`INSERT INTO books (id,title,author,language,category,price,mrp,rating,description,cover)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO NOTHING`,
+          [b.id, b.title, b.author, b.language, b.category, b.price, b.mrp, b.rating, b.desc, b.cover || null]);
+      }
+    },
+    async findUserByLogin(login) {
+      const r = await q(`SELECT * FROM users WHERE LOWER(email)=LOWER($1) OR LOWER(username)=LOWER($1) LIMIT 1`, [login]);
+      return r.rows[0] ? toUser(r.rows[0]) : null;
+    },
+    async findUserById(id) {
+      const r = await q(`SELECT * FROM users WHERE id=$1`, [id]);
+      return r.rows[0] ? toUser(r.rows[0]) : null;
+    },
+    async emailTaken(email) {
+      const r = await q(`SELECT 1 FROM users WHERE LOWER(email)=LOWER($1) LIMIT 1`, [email]);
+      return r.rows.length > 0;
+    },
+    async usernameTaken(username) {
+      const r = await q(`SELECT 1 FROM users WHERE LOWER(username)=LOWER($1) LIMIT 1`, [username]);
+      return r.rows.length > 0;
+    },
+    async createUser(u) {
+      await q(`INSERT INTO users (id,username,email,phone,password_hash,created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [u.id, u.username, u.email, u.phone, u.passwordHash, u.createdAt]);
+    },
+    async listUsers() {
+      const r = await q(`SELECT * FROM users ORDER BY created_at`);
+      return r.rows.map(toUser);
+    },
+    async createSession(token, userId, expires) {
+      await q(`DELETE FROM sessions WHERE expires < $1`, [Date.now()]);
+      await q(`INSERT INTO sessions (token,user_id,expires) VALUES ($1,$2,$3)`, [token, userId, expires]);
+    },
+    async findSessionUser(token) {
+      const r = await q(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
+                         WHERE s.token=$1 AND s.expires > $2`, [token, Date.now()]);
+      return r.rows[0] ? toUser(r.rows[0]) : null;
+    },
+    async deleteSession(token) { await q(`DELETE FROM sessions WHERE token=$1`, [token]); },
+    async getCart(userId) {
+      const r = await q(`SELECT book_id AS "bookId", qty FROM carts WHERE user_id=$1`, [userId]);
+      return r.rows;
+    },
+    async upsertCartLine(userId, bookId, qty) {
+      await q(`INSERT INTO carts (user_id,book_id,qty) VALUES ($1,$2,$3)
+               ON CONFLICT (user_id,book_id) DO UPDATE SET qty = LEAST(9, carts.qty + EXCLUDED.qty)`,
+        [userId, bookId, qty]);
+      return this.getCart(userId);
+    },
+    async setCartLine(userId, bookId, qty) {
+      const r = await q(`UPDATE carts SET qty=$3 WHERE user_id=$1 AND book_id=$2`, [userId, bookId, qty]);
+      return r.rowCount > 0;
+    },
+    async deleteCartLine(userId, bookId) {
+      await q(`DELETE FROM carts WHERE user_id=$1 AND book_id=$2`, [userId, bookId]);
+    },
+    async clearCart(userId) { await q(`DELETE FROM carts WHERE user_id=$1`, [userId]); },
+    async createOrder(o) {
+      await q(`INSERT INTO orders (id,user_id,items,subtotal,delivery,total,name,address,city,pincode,payment,status,placed_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [o.id, o.userId, JSON.stringify(o.items), o.subtotal, o.delivery, o.total,
+         o.name, o.address, o.city, o.pincode, o.payment, o.status, o.placedAt]);
+    },
+    async listOrdersByUser(userId) {
+      const r = await q(`SELECT * FROM orders WHERE user_id=$1 ORDER BY placed_at DESC`, [userId]);
+      return r.rows.map(toOrder);
+    },
+    async listAllOrders() {
+      const r = await q(`SELECT * FROM orders ORDER BY placed_at DESC`);
+      return r.rows.map(toOrder);
+    },
+    async countOrdersByUser(userId) {
+      const r = await q(`SELECT COUNT(*)::int AS c FROM orders WHERE user_id=$1`, [userId]);
+      return r.rows[0].c;
+    },
+    async listBooks() {
+      const r = await q(`SELECT * FROM books ORDER BY id`);
+      return r.rows.map(toBook);
+    },
+    async findBook(id) {
+      const r = await q(`SELECT * FROM books WHERE id=$1`, [id]);
+      return r.rows[0] ? toBook(r.rows[0]) : null;
+    },
+  };
 }
+
+// ---------------- Store select + start ----------------
+let store = null;
+async function initStore() {
+  if (DATABASE_URL) {
+    const { Pool } = require('pg');
+    const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+    // Pehle connection test — galat URL ho to saaf error ke saath band ho
+    await pool.query('SELECT 1');
+    store = createPgStore(pool);
+    await store.init();
+    console.log('BookNest using PostgreSQL (permanent storage)');
+  } else {
+    store = createJsonStore();
+    await store.init();
+    console.log('BookNest using db.json (local storage)');
+  }
+}
+
+// Export for testing (pg-mem)
+module.exports = { createPgStore, createJsonStore, seedBooks };
 
 // ---------------- Password hashing (scrypt) ----------------
 function hashPassword(password) {
@@ -158,22 +300,13 @@ function parseCookies(req) {
   });
   return out;
 }
-async function createSession(userId) {
-  const token = crypto.randomBytes(32).toString('hex');
-  db.sessions = db.sessions.filter(s => s.expires > Date.now());
-  db.sessions.push({ token, userId, expires: Date.now() + 30 * 24 * 3600 * 1000 });
-  await saveDb();
-  return token;
-}
-function getSessionUser(req) {
+async function getSessionUser(req) {
   const token = parseCookies(req).sid;
   if (!token) return null;
-  const s = db.sessions.find(x => x.token === token && x.expires > Date.now());
-  if (!s) return null;
-  return db.users.find(u => u.id === s.userId) || null;
+  return store.findSessionUser(token);
 }
-function requireAuth(req, res, next) {
-  const user = getSessionUser(req);
+async function requireAuth(req, res, next) {
+  const user = await getSessionUser(req);
   if (!user) return res.status(401).json({ error: 'Login required' });
   req.user = user;
   next();
@@ -183,69 +316,70 @@ function publicUser(u) {
 }
 
 // ---------------- Auth API ----------------
-app.post('/api/auth/signup', asyncHandler(async (req, res) => {
-  const { username, email, phone, password } = req.body || {};
-  if (!username || !email || !phone || !password)
-    return res.status(400).json({ error: 'All fields are required' });
-  if (password.length < 6)
-    return res.status(400).json({ error: 'Password must be at least 6 characters' });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-    return res.status(400).json({ error: 'Invalid email address' });
-  if (!/^[0-9+\-\s]{7,15}$/.test(phone))
-    return res.status(400).json({ error: 'Invalid phone number' });
-  if (db.users.some(u => u.email.toLowerCase() === email.toLowerCase()))
-    return res.status(400).json({ error: 'Email already registered' });
-  if (db.users.some(u => u.username.toLowerCase() === username.toLowerCase()))
-    return res.status(400).json({ error: 'Username already taken' });
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const { username, email, phone, password } = req.body || {};
+    if (!username || !email || !phone || !password)
+      return res.status(400).json({ error: 'All fields are required' });
+    if (password.length < 6)
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return res.status(400).json({ error: 'Invalid email address' });
+    if (!/^[0-9+\-\s]{7,15}$/.test(phone))
+      return res.status(400).json({ error: 'Invalid phone number' });
+    if (await store.emailTaken(email))
+      return res.status(400).json({ error: 'Email already registered' });
+    if (await store.usernameTaken(username))
+      return res.status(400).json({ error: 'Username already taken' });
 
-  const user = {
-    id: 'u' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex'),
-    username, email, phone,
-    passwordHash: hashPassword(password),
-    createdAt: new Date().toISOString(),
-  };
-  db.users.push(user);
-  db.carts[user.id] = [];
-  await saveDb();
+    const user = {
+      id: 'u' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex'),
+      username, email, phone,
+      passwordHash: hashPassword(password),
+      createdAt: new Date().toISOString(),
+    };
+    await store.createUser(user);
 
-  const token = await createSession(user.id);
-  res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000, path: '/' });
-  res.json({ user: publicUser(user) });
-}));
+    const token = crypto.randomBytes(32).toString('hex');
+    await store.createSession(token, user.id, Date.now() + 30 * 24 * 3600 * 1000);
+    res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000, path: '/' });
+    res.json({ user: publicUser(user) });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Something went wrong' }); }
+});
 
-app.post('/api/auth/login', asyncHandler(async (req, res) => {
-  const { login, password } = req.body || {};
-  if (!login || !password)
-    return res.status(400).json({ error: 'Email/username and password required' });
-  const user = db.users.find(u =>
-    u.email.toLowerCase() === login.toLowerCase() ||
-    u.username.toLowerCase() === login.toLowerCase());
-  if (!user || !verifyPassword(password, user.passwordHash))
-    return res.status(401).json({ error: 'Invalid credentials' });
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { login, password } = req.body || {};
+    if (!login || !password)
+      return res.status(400).json({ error: 'Email/username and password required' });
+    const user = await store.findUserByLogin(login);
+    if (!user || !verifyPassword(password, user.passwordHash))
+      return res.status(401).json({ error: 'Invalid credentials' });
 
-  const token = await createSession(user.id);
-  res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000, path: '/' });
-  res.json({ user: publicUser(user) });
-}));
+    const token = crypto.randomBytes(32).toString('hex');
+    await store.createSession(token, user.id, Date.now() + 30 * 24 * 3600 * 1000);
+    res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000, path: '/' });
+    res.json({ user: publicUser(user) });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Something went wrong' }); }
+});
 
-app.post('/api/auth/logout', asyncHandler(async (req, res) => {
-  const token = parseCookies(req).sid;
-  if (token) {
-    db.sessions = db.sessions.filter(s => s.token !== token);
-    await saveDb();
-  }
+app.post('/api/auth/logout', async (req, res) => {
+  try {
+    const token = parseCookies(req).sid;
+    if (token) await store.deleteSession(token);
+  } catch (e) { /* ignore */ }
   res.clearCookie('sid', { path: '/' });
   res.json({ ok: true });
-}));
+});
 
-app.get('/api/auth/me', (req, res) => {
-  const user = getSessionUser(req);
+app.get('/api/auth/me', async (req, res) => {
+  const user = await getSessionUser(req);
   res.json({ user: user ? publicUser(user) : null });
 });
 
 // ---------------- Books API ----------------
-app.get('/api/books', (req, res) => {
-  let list = db.books;
+app.get('/api/books', async (req, res) => {
+  let list = await store.listBooks();
   const { q, language, category } = req.query;
   if (q) {
     const s = q.toLowerCase();
@@ -256,84 +390,81 @@ app.get('/api/books', (req, res) => {
   res.json(list);
 });
 
-app.get('/api/books/:id', (req, res) => {
-  const book = db.books.find(b => b.id === req.params.id);
+app.get('/api/books/:id', async (req, res) => {
+  const book = await store.findBook(req.params.id);
   if (!book) return res.status(404).json({ error: 'Book not found' });
   res.json(book);
 });
 
 // ---------------- Cart API (login required) ----------------
-app.get('/api/cart', requireAuth, (req, res) => {
-  const items = db.carts[req.user.id] || [];
-  res.json(items.map(it => ({ ...it, book: db.books.find(b => b.id === it.bookId) })).filter(x => x.book));
+async function cartWithBooks(userId) {
+  const items = await store.getCart(userId);
+  const out = [];
+  for (const it of items) {
+    const book = await store.findBook(it.bookId);
+    if (book) out.push({ ...it, book });
+  }
+  return out;
+}
+
+app.get('/api/cart', requireAuth, async (req, res) => {
+  res.json(await cartWithBooks(req.user.id));
 });
 
-app.post('/api/cart', requireAuth, asyncHandler(async (req, res) => {
+app.post('/api/cart', requireAuth, async (req, res) => {
   const { bookId, qty } = req.body || {};
-  const book = db.books.find(b => b.id === bookId);
+  const book = await store.findBook(bookId);
   if (!book) return res.status(404).json({ error: 'Book not found' });
-  const cart = db.carts[req.user.id] || (db.carts[req.user.id] = []);
-  const line = cart.find(x => x.bookId === bookId);
-  if (line) line.qty = Math.min(9, line.qty + (qty || 1));
-  else cart.push({ bookId, qty: qty || 1 });
-  await saveDb();
+  const cart = await store.upsertCartLine(req.user.id, bookId, qty || 1);
   res.json({ ok: true, count: cart.reduce((n, x) => n + x.qty, 0) });
-}));
+});
 
-app.put('/api/cart/:bookId', requireAuth, asyncHandler(async (req, res) => {
-  const cart = db.carts[req.user.id] || [];
-  const line = cart.find(x => x.bookId === req.params.bookId);
-  if (!line) return res.status(404).json({ error: 'Not in cart' });
-  line.qty = Math.max(1, Math.min(9, req.body.qty || 1));
-  await saveDb();
+app.put('/api/cart/:bookId', requireAuth, async (req, res) => {
+  const ok = await store.setCartLine(req.user.id, req.params.bookId, Math.max(1, Math.min(9, req.body.qty || 1)));
+  if (!ok) return res.status(404).json({ error: 'Not in cart' });
   res.json({ ok: true });
-}));
+});
 
-app.delete('/api/cart/:bookId', requireAuth, asyncHandler(async (req, res) => {
-  db.carts[req.user.id] = (db.carts[req.user.id] || []).filter(x => x.bookId !== req.params.bookId);
-  await saveDb();
+app.delete('/api/cart/:bookId', requireAuth, async (req, res) => {
+  await store.deleteCartLine(req.user.id, req.params.bookId);
   res.json({ ok: true });
-}));
+});
 
 // ---------------- Orders API (login required) ----------------
-app.post('/api/orders', requireAuth, asyncHandler(async (req, res) => {
-  const { name, address, city, pincode, payment } = req.body || {};
-  if (!name || !address || !city || !pincode)
-    return res.status(400).json({ error: 'Delivery details required' });
-  const cart = db.carts[req.user.id] || [];
-  if (!cart.length) return res.status(400).json({ error: 'Cart is empty' });
+app.post('/api/orders', requireAuth, async (req, res) => {
+  try {
+    const { name, address, city, pincode, payment } = req.body || {};
+    if (!name || !address || !city || !pincode)
+      return res.status(400).json({ error: 'Delivery details required' });
+    const cart = await cartWithBooks(req.user.id);
+    if (!cart.length) return res.status(400).json({ error: 'Cart is empty' });
 
-  const items = cart.map(it => {
-    const book = db.books.find(b => b.id === it.bookId);
-    return { bookId: it.bookId, title: book.title, price: book.price, qty: it.qty };
-  });
-  const subtotal = items.reduce((n, x) => n + x.price * x.qty, 0);
-  const delivery = subtotal >= 499 ? 0 : 49; // ₹499 se upar FREE delivery
-  const order = {
-    id: 'ORD' + Date.now().toString(36).toUpperCase(),
-    userId: req.user.id,
-    items, subtotal, delivery, total: subtotal + delivery,
-    name, address, city, pincode,
-    payment: payment || 'Cash on Delivery',
-    status: 'Placed',
-    placedAt: new Date().toISOString(),
-  };
-  db.orders.push(order);
-  db.carts[req.user.id] = [];
-  await saveDb();
-  res.json({ order });
-}));
+    const items = cart.map(x => ({ bookId: x.bookId, title: x.book.title, price: x.book.price, qty: x.qty }));
+    const subtotal = items.reduce((n, x) => n + x.price * x.qty, 0);
+    const delivery = subtotal >= 499 ? 0 : 49; // ₹499 se upar FREE delivery
+    const order = {
+      id: 'ORD' + Date.now().toString(36).toUpperCase(),
+      userId: req.user.id,
+      items, subtotal, delivery, total: subtotal + delivery,
+      name, address, city, pincode,
+      payment: payment || 'Cash on Delivery',
+      status: 'Placed',
+      placedAt: new Date().toISOString(),
+    };
+    await store.createOrder(order);
+    await store.clearCart(req.user.id);
+    res.json({ order });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Something went wrong' }); }
+});
 
-app.get('/api/orders', requireAuth, (req, res) => {
-  res.json(db.orders.filter(o => o.userId === req.user.id).reverse());
+app.get('/api/orders', requireAuth, async (req, res) => {
+  res.json(await store.listOrdersByUser(req.user.id));
 });
 
 // ---------------- Admin Panel (dukandaar ke liye) ----------------
 // Customer ka data dekhne ke liye: browser me /admin.html kholo.
 // ADMIN_PASSWORD ko apne hisaab se badal lo (koi bhi strong password rakho).
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || (
-  process.env.NODE_ENV === 'production' ? null : 'admin123'
-);
+const ADMIN_PASSWORD = 'admin123';
 const adminSessions = new Set();
 
 function requireAdmin(req, res, next) {
@@ -344,7 +475,7 @@ function requireAdmin(req, res, next) {
 }
 
 app.post('/api/admin/login', (req, res) => {
-  if (!ADMIN_PASSWORD || !req.body || req.body.password !== ADMIN_PASSWORD)
+  if (!req.body || req.body.password !== ADMIN_PASSWORD)
     return res.status(401).json({ error: 'Wrong admin password' });
   const token = crypto.randomBytes(32).toString('hex');
   adminSessions.add(token);
@@ -360,58 +491,45 @@ app.post('/api/admin/logout', (req, res) => {
 
 // Saare customers — NOTE: password kabhi nahi bhejte (wo hashed save hota hai,
 // use koi nahi dekh sakta, tum bhi nahi — yehi sahi tareeka hai)
-app.get('/api/admin/customers', requireAdmin, (req, res) => {
-  res.json(db.users.map(u => ({
-    username: u.username,
-    email: u.email,
-    phone: u.phone,
-    createdAt: u.createdAt,
-    orders: db.orders.filter(o => o.userId === u.id).length,
-  })));
+app.get('/api/admin/customers', requireAdmin, async (req, res) => {
+  const users = await store.listUsers();
+  const out = [];
+  for (const u of users) {
+    out.push({
+      username: u.username, email: u.email, phone: u.phone,
+      createdAt: u.createdAt, orders: await store.countOrdersByUser(u.id),
+    });
+  }
+  res.json(out);
 });
 
 // Saare orders — customer ka naam + delivery address ke saath
-app.get('/api/admin/orders', requireAdmin, (req, res) => {
-  res.json(db.orders.map(o => {
-    const u = db.users.find(x => x.id === o.userId) || {};
-    return {
-      id: o.id,
-      placedAt: o.placedAt,
-      customer: u.username || '—',
-      email: u.email || '—',
-      phone: u.phone || '—',
-      items: o.items,
-      subtotal: o.subtotal,
-      delivery: o.delivery,
-      total: o.total,
-      name: o.name,
-      address: o.address,
-      city: o.city,
-      pincode: o.pincode,
-      payment: o.payment,
-      status: o.status,
-    };
-  }).reverse());
+app.get('/api/admin/orders', requireAdmin, async (req, res) => {
+  const orders = await store.listAllOrders();
+  const out = [];
+  for (const o of orders) {
+    const u = await store.findUserById(o.userId) || {};
+    out.push({
+      id: o.id, placedAt: o.placedAt,
+      customer: u.username || '—', email: u.email || '—', phone: u.phone || '—',
+      items: o.items, subtotal: o.subtotal, delivery: o.delivery, total: o.total,
+      name: o.name, address: o.address, city: o.city, pincode: o.pincode,
+      payment: o.payment, status: o.status,
+    });
+  }
+  res.json(out);
 });
 
 // ---------------- Start ----------------
-app.use((err, req, res, next) => {
-  console.error('Request failed:', err);
-  if (res.headersSent) return next(err);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
-async function startServer() {
-  try {
-    await initializeDb();
+// test me require karne par server auto-start na ho
+if (require.main === module) {
+  initStore().then(() => {
     app.listen(PORT, () => {
-      console.log('BookNest running at http://localhost:' + PORT);
+      console.log('BookNest running at http://localhost:' + PORT + '  [store: ' + store.name + ']');
     });
-  } catch (err) {
-    console.error('Database initialization failed:', err);
-    process.exitCode = 1;
-    if (dbPool) await dbPool.end();
-  }
+  }).catch(err => {
+    console.error('FATAL: database se connect nahi ho paya:', err.message);
+    console.error('DATABASE_URL check karo — ya use hata kar db.json mode me chalao.');
+    process.exit(1);
+  });
 }
-
-startServer();
