@@ -54,10 +54,10 @@
   <div class="container py-3">
     <!-- Tabs -->
     <ul class="nav nav-tabs mb-3" id="adminTabs">
-      <li class="nav-item"><a class="nav-link active" onclick="showTab('dash')">📊 Dashboard</a></li>
-      <li class="nav-item"><a class="nav-link" onclick="showTab('traffic')">🌍 Traffic</a></li>
-      <li class="nav-item"><a class="nav-link" onclick="showTab('customers')">👥 Customers</a></li>
-      <li class="nav-item"><a class="nav-link" onclick="showTab('orders')">📦 Orders</a></li>
+      <li class="nav-item"><a class="nav-link active" onclick="showTab('dash',this)">📊 Dashboard</a></li>
+      <li class="nav-item"><a class="nav-link" onclick="showTab('traffic',this)">🌍 Traffic</a></li>
+      <li class="nav-item"><a class="nav-link" onclick="showTab('customers',this)">👥 Customers</a></li>
+      <li class="nav-item"><a class="nav-link" onclick="showTab('orders',this)">📦 Orders</a></li>
     </ul>
 
     <!-- ===== TAB 1: DASHBOARD ===== -->
@@ -174,9 +174,9 @@ function showDashboard() {
   document.getElementById('dashboard').classList.remove('d-none');
   loadAll();
 }
-function showTab(name) {
+function showTab(name, el) {
   document.querySelectorAll('#adminTabs .nav-link').forEach(a => a.classList.remove('active'));
-  event.target.classList.add('active');
+  (el || event.target).classList.add('active');
   ['dash','traffic','customers','orders'].forEach(t =>
     document.getElementById('tab-' + t).classList.toggle('d-none', t !== name));
 }
@@ -185,15 +185,19 @@ function showTab(name) {
 async function loadAll() {
   const cRes = await fetch('/api/admin/customers');
   if (!cRes.ok) return showLogin();
-  const [ov, visits, customers, orders] = await Promise.all([
+  const results = await Promise.allSettled([
     fetch('/api/admin/overview').then(r => r.json()),
     fetch('/api/admin/visits?limit=100').then(r => r.json()),
     cRes.json(),
     fetch('/api/admin/orders').then(r => r.json()),
   ]);
-  STATUSES = ov.statuses || STATUSES;
-  ALL_ORDERS = orders;
-  renderOverview(ov); renderVisits(visits); renderCustomers(customers); renderOrders();
+  const [ov, visits, customers, orders] = results.map(r => r.status === 'fulfilled' ? r.value : null);
+  // Ek API fail ho to bhi baaki tabs dikhne chahiye
+  if (ov && !ov.error) { STATUSES = ov.statuses || STATUSES; renderOverview(ov); }
+  else document.getElementById('dayChart').innerHTML = '<span class="text-danger">Dashboard load nahi hua — 🔄 Refresh dabao</span>';
+  if (visits && !visits.error) renderVisits(visits);
+  if (customers && !customers.error) renderCustomers(customers);
+  if (orders && !orders.error) { ALL_ORDERS = orders; renderOrders(); }
   const sf = document.getElementById('statusFilter');
   if (sf.options.length <= 1) STATUSES.forEach(s => sf.add(new Option(s, s)));
 }
