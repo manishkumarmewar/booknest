@@ -1,7 +1,7 @@
 # 🪹 BookNest — Server Version (Admin Panel ke saath)
 
-Ye **asli** website hai — login/signup server par hota hai, saara customer data
-aur orders server par save hote hain, isliye **Admin Panel** me sab dikhta hai.
+Ye website Node.js server par chalti hai. Customer accounts aur orders local testing me
+`db.json` me, aur hosted deployment me PostgreSQL database me save hote hain.
 
 ## Kya-kya hai isme
 
@@ -36,8 +36,8 @@ Bina iske server nahi chalega.
 3. VS Code ka terminal kholo (menu: Terminal → New Terminal)
 4. Ye 2 commands chalao:
    ```
-   npm install
-   node server.js
+  npm install
+  npm start
    ```
    `BookNest running at http://localhost:3000` dikhega — matlab chal gaya ✅
    (Terminal band mat karna jab tak site chalani hai!)
@@ -51,7 +51,6 @@ Browser me kholo: **http://localhost:3000**
 ### Step 3 — Admin Panel kholo
 
 Browser me kholo: **http://localhost:3000/admin.html**
-- Ya site ke neeche footer me **🔐 Admin Panel** link dabao
 - Password: **admin123**
 
 Admin panel me dikhega:
@@ -62,15 +61,21 @@ Admin panel me dikhega:
 ## Zaroori notes
 
 - 🔑 **Admin password:** Local testing ke liye default `admin123` hai. Production me
-  `ADMIN_PASSWORD` environment variable ko strong password se set karo; bina iske
-  production admin login disabled rahega.
+  Render ke Environment settings me `ADMIN_PASSWORD` ko strong secret se set karo.
 - 📞 **Apna phone number:** `public/index.html` me `APNA NUMBER YAHAN` dhoondo —
   2 jagah demo number `+91 98765 43210` hai, apna asli number likh do.
 - 🔒 **Passwords kabhi visible nahi hote** — na admin panel me, na kahin.
   Wo hash hokar save hote hain. Yehi sahi aur safe tareeka hai — sir ko ye batana! 💪
 - 💳 **Payments demo mode hain** — UPI/Card ke paise asli me nahi kat-te.
   Asli payments ke liye Razorpay/Stripe lagana padega.
-- 💾 Saara data `db.json` file me save hota hai (server wale folder me banti hai).
-  Customers aur orders kabhi delete nahi hote jab tak tum khud `db.json` na hatao.
-- 🌐 Ye site sirf **tumhare computer** par chalti hai (`localhost`).
-  Duniya ko dikhane ke liye ise internet par host karna padega (Render/Railway jaise free options hain).
+- 💾 Local data `db.json` me save hota hai. Hosted Render service ke liye durable storage
+  zaroori hai; free service ka local filesystem permanent nahi hota.
+- 🌐 Render par customer data permanently rakhne ke liye free Neon PostgreSQL database banao:
+  1. `https://neon.tech` par project banao aur connection string copy karo.
+  2. Render dashboard me `booknest` service ke **Environment** section me `DATABASE_URL`
+     variable add karo. Connection string ko GitHub ya chat me mat daalo.
+  3. **Save, rebuild, and deploy** dabao. Server table khud banayega; naye users aur orders
+     PostgreSQL me store honge. `DATABASE_URL` ke bina production server start nahi hoga.
+- ⚠️ Free database plans ki limits aur retention policies hoti hain. Lifetime guarantee ke
+  liye provider ki limits check karo aur regular backups/export rakho. Pehle se lost data
+  automatically wapas nahi aayega.

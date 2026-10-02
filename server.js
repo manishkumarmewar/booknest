@@ -1,7 +1,7 @@
 // ============================================================
 // BookNest — Server (Node.js + Express)
 // Real login/signup with secure password hashing (scrypt),
-// JSON file database, cart + orders API, admin panel API.
+// Local JSON or PostgreSQL database, cart + orders API, admin panel API.
 // Run:  npm install   then   node server.js
 // Open: http://localhost:3000
 // Admin: http://localhost:3000/admin.html  (password: admin123)
@@ -11,10 +11,13 @@ const express = require('express');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, 'db.json');
+const DATABASE_URL = process.env.DATABASE_URL;
+const dbPool = DATABASE_URL ? new Pool({ connectionString: DATABASE_URL, max: 1 }) : null;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -47,27 +50,90 @@ function seedBooks() {
   ];
 }
 
-// ---------------- Tiny JSON database ----------------
-function loadDb() {
+// ---------------- JSON database ----------------
+function createEmptyDb() {
+  return { users: [], sessions: [], carts: {}, orders: [], books: seedBooks() };
+}
+
+function ensureDbShape(data) {
+  let changed = false;
+  if (!Array.isArray(data.users)) { data.users = []; changed = true; }
+  if (!Array.isArray(data.sessions)) { data.sessions = []; changed = true; }
+  if (!data.carts || typeof data.carts !== 'object') { data.carts = {}; changed = true; }
+  if (!Array.isArray(data.orders)) { data.orders = []; changed = true; }
+  if (!Array.isArray(data.books)) { data.books = []; changed = true; }
+
+  const have = new Set(data.books.map(book => book.id));
+  for (const book of seedBooks()) {
+    if (!have.has(book.id)) {
+      data.books.push(book);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function loadLocalDb() {
   if (!fs.existsSync(DB_PATH)) {
-    const db = { users: [], sessions: [], carts: {}, orders: [], books: seedBooks() };
+    const initial = createEmptyDb();
+    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2));
+    return initial;
+  }
+  const data = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
+  if (ensureDbShape(data)) fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+  return data;
+}
+
+let db;
+let saveQueue = Promise.resolve();
+
+async function saveDb() {
+  if (!dbPool) {
     fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
-    return db;
+    return;
   }
-  const db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
-  // Purane version se upgrade ho raha hai to nayi books jod do (b13-b22)
-  const have = new Set((db.books || []).map(b => b.id));
-  let added = false;
-  for (const b of seedBooks()) {
-    if (!have.has(b.id)) { db.books.push(b); added = true; }
+
+  const snapshot = JSON.stringify(db);
+  const write = saveQueue.catch(() => {}).then(() => dbPool.query(
+    `INSERT INTO booknest_state (id, data)
+     VALUES (1, $1::jsonb)
+     ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data`,
+    [snapshot]
+  ));
+  saveQueue = write;
+  await write;
+}
+
+async function initializeDb() {
+  if (!dbPool) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('DATABASE_URL is required in production for persistent customer data');
+    }
+    db = loadLocalDb();
+    return;
   }
-  if (added) fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
-  return db;
+
+  await dbPool.query(`
+    CREATE TABLE IF NOT EXISTS booknest_state (
+      id SMALLINT PRIMARY KEY CHECK (id = 1),
+      data JSONB NOT NULL
+    )
+  `);
+
+  const result = await dbPool.query('SELECT data FROM booknest_state WHERE id = 1');
+  if (result.rowCount === 0) {
+    db = createEmptyDb();
+    await saveDb();
+    return;
+  }
+
+  db = result.rows[0].data;
+  if (ensureDbShape(db)) await saveDb();
 }
-function saveDb() {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+
+function asyncHandler(handler) {
+  return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
-let db = loadDb();
 
 // ---------------- Password hashing (scrypt) ----------------
 function hashPassword(password) {
@@ -92,11 +158,11 @@ function parseCookies(req) {
   });
   return out;
 }
-function createSession(userId) {
+async function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
   db.sessions = db.sessions.filter(s => s.expires > Date.now());
   db.sessions.push({ token, userId, expires: Date.now() + 30 * 24 * 3600 * 1000 });
-  saveDb();
+  await saveDb();
   return token;
 }
 function getSessionUser(req) {
@@ -117,7 +183,7 @@ function publicUser(u) {
 }
 
 // ---------------- Auth API ----------------
-app.post('/api/auth/signup', (req, res) => {
+app.post('/api/auth/signup', asyncHandler(async (req, res) => {
   const { username, email, phone, password } = req.body || {};
   if (!username || !email || !phone || !password)
     return res.status(400).json({ error: 'All fields are required' });
@@ -140,14 +206,14 @@ app.post('/api/auth/signup', (req, res) => {
   };
   db.users.push(user);
   db.carts[user.id] = [];
-  saveDb();
+  await saveDb();
 
-  const token = createSession(user.id);
+  const token = await createSession(user.id);
   res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000, path: '/' });
   res.json({ user: publicUser(user) });
-});
+}));
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', asyncHandler(async (req, res) => {
   const { login, password } = req.body || {};
   if (!login || !password)
     return res.status(400).json({ error: 'Email/username and password required' });
@@ -157,20 +223,20 @@ app.post('/api/auth/login', (req, res) => {
   if (!user || !verifyPassword(password, user.passwordHash))
     return res.status(401).json({ error: 'Invalid credentials' });
 
-  const token = createSession(user.id);
+  const token = await createSession(user.id);
   res.cookie('sid', token, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 3600 * 1000, path: '/' });
   res.json({ user: publicUser(user) });
-});
+}));
 
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', asyncHandler(async (req, res) => {
   const token = parseCookies(req).sid;
   if (token) {
     db.sessions = db.sessions.filter(s => s.token !== token);
-    saveDb();
+    await saveDb();
   }
   res.clearCookie('sid', { path: '/' });
   res.json({ ok: true });
-});
+}));
 
 app.get('/api/auth/me', (req, res) => {
   const user = getSessionUser(req);
@@ -202,7 +268,7 @@ app.get('/api/cart', requireAuth, (req, res) => {
   res.json(items.map(it => ({ ...it, book: db.books.find(b => b.id === it.bookId) })).filter(x => x.book));
 });
 
-app.post('/api/cart', requireAuth, (req, res) => {
+app.post('/api/cart', requireAuth, asyncHandler(async (req, res) => {
   const { bookId, qty } = req.body || {};
   const book = db.books.find(b => b.id === bookId);
   if (!book) return res.status(404).json({ error: 'Book not found' });
@@ -210,27 +276,27 @@ app.post('/api/cart', requireAuth, (req, res) => {
   const line = cart.find(x => x.bookId === bookId);
   if (line) line.qty = Math.min(9, line.qty + (qty || 1));
   else cart.push({ bookId, qty: qty || 1 });
-  saveDb();
+  await saveDb();
   res.json({ ok: true, count: cart.reduce((n, x) => n + x.qty, 0) });
-});
+}));
 
-app.put('/api/cart/:bookId', requireAuth, (req, res) => {
+app.put('/api/cart/:bookId', requireAuth, asyncHandler(async (req, res) => {
   const cart = db.carts[req.user.id] || [];
   const line = cart.find(x => x.bookId === req.params.bookId);
   if (!line) return res.status(404).json({ error: 'Not in cart' });
   line.qty = Math.max(1, Math.min(9, req.body.qty || 1));
-  saveDb();
+  await saveDb();
   res.json({ ok: true });
-});
+}));
 
-app.delete('/api/cart/:bookId', requireAuth, (req, res) => {
+app.delete('/api/cart/:bookId', requireAuth, asyncHandler(async (req, res) => {
   db.carts[req.user.id] = (db.carts[req.user.id] || []).filter(x => x.bookId !== req.params.bookId);
-  saveDb();
+  await saveDb();
   res.json({ ok: true });
-});
+}));
 
 // ---------------- Orders API (login required) ----------------
-app.post('/api/orders', requireAuth, (req, res) => {
+app.post('/api/orders', requireAuth, asyncHandler(async (req, res) => {
   const { name, address, city, pincode, payment } = req.body || {};
   if (!name || !address || !city || !pincode)
     return res.status(400).json({ error: 'Delivery details required' });
@@ -254,9 +320,9 @@ app.post('/api/orders', requireAuth, (req, res) => {
   };
   db.orders.push(order);
   db.carts[req.user.id] = [];
-  saveDb();
+  await saveDb();
   res.json({ order });
-});
+}));
 
 app.get('/api/orders', requireAuth, (req, res) => {
   res.json(db.orders.filter(o => o.userId === req.user.id).reverse());
@@ -329,6 +395,23 @@ app.get('/api/admin/orders', requireAdmin, (req, res) => {
 });
 
 // ---------------- Start ----------------
-app.listen(PORT, () => {
-  console.log('BookNest running at http://localhost:' + PORT);
+app.use((err, req, res, next) => {
+  console.error('Request failed:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Internal server error' });
 });
+
+async function startServer() {
+  try {
+    await initializeDb();
+    app.listen(PORT, () => {
+      console.log('BookNest running at http://localhost:' + PORT);
+    });
+  } catch (err) {
+    console.error('Database initialization failed:', err);
+    process.exitCode = 1;
+    if (dbPool) await dbPool.end();
+  }
+}
+
+startServer();
