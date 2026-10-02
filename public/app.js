@@ -474,6 +474,15 @@ function showContact() {
 // Pehle dekho koi login session hai ya nahi; nahi to login page dikhao
 (async function init() {
   initTilt();
+  // Visitor tracking — har page load par ek chhota signal (admin panel me traffic dikhega)
+  try {
+    fetch('/api/track', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: location.pathname, referrer: document.referrer || '' }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) {}
   try {
     const r = await api('/api/auth/me');
     if (r.user) { await enterApp(r.user); return; }
