@@ -63,7 +63,7 @@ function seedBooks() {
 function createJsonStore() {
   function loadDb() {
     if (!fs.existsSync(DB_PATH)) {
-      const db = { users: [], sessions: [], carts: {}, orders: [], books: seedBooks() };
+      const db = { users: [], sessions: [], carts: {}, orders: [], books: seedBooks(), visits: [] };
       fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
       return db;
     }
@@ -74,6 +74,7 @@ function createJsonStore() {
       if (!have.has(b.id)) { db.books.push(b); added = true; }
     }
     if (added) fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+    if (!db.visits) { db.visits = []; fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2)); }
     return db;
   }
   let db = loadDb();
@@ -122,6 +123,27 @@ function createJsonStore() {
     async countOrdersByUser(userId) { return db.orders.filter(o => o.userId === userId).length; },
     async listBooks() { return db.books; },
     async findBook(id) { return db.books.find(b => b.id === id) || null; },
+    // ---- Visitor tracking ----
+    async logVisit(v) {
+      db.visits.push({ id: 'v' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'), ...v });
+      save();
+    },
+    async listVisits(limit) {
+      return db.visits.slice(-limit).reverse().map(v => {
+        const u = v.userId ? db.users.find(x => x.id === v.userId) : null;
+        return { ...v, username: u ? u.username : null };
+      });
+    },
+    // ---- Order status ----
+    async updateOrderStatus(orderId, status) {
+      const o = db.orders.find(x => x.id === orderId);
+      if (!o) return false;
+      o.status = status; save(); return true;
+    },
+    async touchUser(id) {
+      const u = db.users.find(x => x.id === id);
+      if (u) { u.lastSeen = new Date().toISOString(); save(); }
+    },
   };
 }
 
@@ -138,6 +160,7 @@ function createPgStore(pool) {
   const toUser = r => ({
     id: r.id, username: r.username, email: r.email, phone: r.phone,
     passwordHash: r.password_hash, createdAt: r.created_at,
+    lastSeen: r.last_seen || null,
   });
   const toOrder = r => ({
     id: r.id, userId: r.user_id,
@@ -164,6 +187,12 @@ function createPgStore(pool) {
         name TEXT NOT NULL, address TEXT NOT NULL, city TEXT NOT NULL,
         pincode TEXT NOT NULL, payment TEXT NOT NULL, status TEXT NOT NULL,
         placed_at TIMESTAMPTZ NOT NULL)`);
+      await q(`CREATE TABLE IF NOT EXISTS visits (
+        id TEXT PRIMARY KEY, user_id TEXT, ip TEXT, country TEXT, city TEXT,
+        device TEXT, browser TEXT, os TEXT, referrer TEXT, page TEXT,
+        visited_at TIMESTAMPTZ NOT NULL)`);
+      await q(`CREATE INDEX IF NOT EXISTS idx_visits_time ON visits (visited_at DESC)`);
+      await q(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ`);
       await q(`CREATE TABLE IF NOT EXISTS books (
         id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL,
         language TEXT NOT NULL, category TEXT NOT NULL, price INT NOT NULL,
@@ -253,6 +282,29 @@ function createPgStore(pool) {
       const r = await q(`SELECT * FROM books WHERE id=$1`, [id]);
       return r.rows[0] ? toBook(r.rows[0]) : null;
     },
+    // ---- Visitor tracking ----
+    async logVisit(v) {
+      await q(`INSERT INTO visits (id,user_id,ip,country,city,device,browser,os,referrer,page,visited_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [v.id, v.userId || null, v.ip, v.country, v.city, v.device, v.browser, v.os, v.referrer, v.page, v.visitedAt]);
+    },
+    async listVisits(limit) {
+      const r = await q(`SELECT v.*, u.username FROM visits v LEFT JOIN users u ON u.id = v.user_id
+                         ORDER BY visited_at DESC LIMIT $1`, [limit]);
+      return r.rows.map(x => ({
+        id: x.id, userId: x.user_id, username: x.username, ip: x.ip,
+        country: x.country, city: x.city, device: x.device, browser: x.browser,
+        os: x.os, referrer: x.referrer, page: x.page, visitedAt: x.visited_at,
+      }));
+    },
+    // ---- Order status ----
+    async updateOrderStatus(orderId, status) {
+      const r = await q(`UPDATE orders SET status=$2 WHERE id=$1`, [orderId, status]);
+      return r.rowCount > 0;
+    },
+    async touchUser(id) {
+      await q(`UPDATE users SET last_seen=$2 WHERE id=$1`, [id, new Date().toISOString()]);
+    },
   };
 }
 
@@ -315,6 +367,52 @@ function publicUser(u) {
   return { id: u.id, username: u.username, email: u.email, phone: u.phone };
 }
 
+// ---------------- Visitor tracking helpers ----------------
+// Render proxy ke peeche hota hai, isliye asli IP x-forwarded-for se aata hai
+function clientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (fwd) return fwd.split(',')[0].trim();
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
+}
+// Browser ke user-agent se device/browser/OS nikalo
+function parseUA(ua) {
+  ua = ua || '';
+  let device = 'Desktop', os = 'Unknown', browser = 'Unknown';
+  if (/mobile|android|iphone|ipod/i.test(ua)) device = 'Mobile';
+  else if (/tablet|ipad/i.test(ua)) device = 'Tablet';
+  if (/windows/i.test(ua)) os = 'Windows';
+  else if (/android/i.test(ua)) os = 'Android';
+  else if (/iphone|ipad|ipod/i.test(ua)) os = 'iOS';
+  else if (/mac os/i.test(ua)) os = 'macOS';
+  else if (/linux/i.test(ua)) os = 'Linux';
+  if (/edg/i.test(ua)) browser = 'Edge';
+  else if (/opr|opera/i.test(ua)) browser = 'Opera';
+  else if (/chrome/i.test(ua)) browser = 'Chrome';
+  else if (/safari/i.test(ua) && /version/i.test(ua)) browser = 'Safari';
+  else if (/firefox/i.test(ua)) browser = 'Firefox';
+  return { device, os, browser };
+}
+// IP → desh/sahar (free API, best-effort — fail ho to 'Unknown', site nahi rukegi)
+const geoCache = new Map();
+async function geoLookup(ip) {
+  if (!ip || ip === 'unknown' || ip.startsWith('127.') || ip === '::1' || ip === '::ffff:127.0.0.1')
+    return { country: 'Local', city: 'Local' };
+  if (geoCache.has(ip)) return geoCache.get(ip);
+  const fallback = { country: 'Unknown', city: 'Unknown' };
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 2500);
+    const res = await fetch('http://ip-api.com/json/' + encodeURIComponent(ip) + '?fields=status,country,city', { signal: ctrl.signal });
+    clearTimeout(t);
+    const j = await res.json();
+    const out = (j && j.status === 'success')
+      ? { country: j.country || 'Unknown', city: j.city || 'Unknown' } : fallback;
+    if (geoCache.size > 2000) geoCache.clear();
+    geoCache.set(ip, out);
+    return out;
+  } catch (e) { return fallback; }
+}
+
 // ---------------- Auth API ----------------
 app.post('/api/auth/signup', async (req, res) => {
   try {
@@ -374,7 +472,32 @@ app.post('/api/auth/logout', async (req, res) => {
 
 app.get('/api/auth/me', async (req, res) => {
   const user = await getSessionUser(req);
+  if (user) store.touchUser(user.id).catch(() => {}); // last seen update (admin ke liye)
   res.json({ user: user ? publicUser(user) : null });
+});
+
+// ---------------- Visitor tracking (public) ----------------
+// Frontend har page load par ek chhota signal bhejta hai —
+// kaun aaya (IP), kahan se (desh/sahar), kaise (mobile/desktop, browser), kab
+app.post('/api/track', async (req, res) => {
+  try {
+    const { page, referrer, userId } = req.body || {};
+    const ip = clientIp(req);
+    const { device, os, browser } = parseUA(req.headers['user-agent']);
+    const geo = await geoLookup(ip);
+    let uid = userId || null;
+    if (!uid) { const u = await getSessionUser(req); if (u) uid = u.id; }
+    await store.logVisit({
+      id: 'v' + Date.now().toString(36) + crypto.randomBytes(2).toString('hex'),
+      userId: uid, ip,
+      country: geo.country, city: geo.city,
+      device, browser, os,
+      referrer: (referrer || '').slice(0, 300),
+      page: (page || '/').slice(0, 100),
+      visitedAt: new Date().toISOString(),
+    });
+  } catch (e) { console.error('track error:', e.message); }
+  res.json({ ok: true });
 });
 
 // ---------------- Books API ----------------
@@ -489,15 +612,21 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// Saare customers — NOTE: password kabhi nahi bhejte (wo hashed save hota hai,
+// Saare customers — poori detail: kab signup kiya, kab last aaya, kitne order, kitna kharcha
+// NOTE: password kabhi nahi bhejte (wo hashed save hota hai,
 // use koi nahi dekh sakta, tum bhi nahi — yehi sahi tareeka hai)
 app.get('/api/admin/customers', requireAdmin, async (req, res) => {
   const users = await store.listUsers();
+  const orders = await store.listAllOrders();
   const out = [];
   for (const u of users) {
+    const uo = orders.filter(o => o.userId === u.id);
     out.push({
       username: u.username, email: u.email, phone: u.phone,
-      createdAt: u.createdAt, orders: await store.countOrdersByUser(u.id),
+      createdAt: u.createdAt, lastSeen: u.lastSeen || null,
+      orders: uo.length,
+      totalSpent: uo.filter(o => o.status !== 'Cancelled').reduce((s, o) => s + o.total, 0),
+      lastOrderAt: uo.length ? uo[0].placedAt : null,
     });
   }
   res.json(out);
@@ -518,6 +647,68 @@ app.get('/api/admin/orders', requireAdmin, async (req, res) => {
     });
   }
   res.json(out);
+});
+
+// Order ka status badlo — Placed → Confirmed → Shipped → Out for Delivery → Delivered (ya Cancelled)
+const ORDER_STATUSES = ['Placed', 'Confirmed', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled'];
+app.put('/api/admin/orders/:id/status', requireAdmin, async (req, res) => {
+  const { status } = req.body || {};
+  if (!ORDER_STATUSES.includes(status))
+    return res.status(400).json({ error: 'Invalid status' });
+  const ok = await store.updateOrderStatus(req.params.id, status);
+  if (!ok) return res.status(404).json({ error: 'Order not found' });
+  res.json({ ok: true, status });
+});
+
+// Taaza visits — kaun aaya, kahan se, kaise (table ke liye)
+app.get('/api/admin/visits', requireAdmin, async (req, res) => {
+  const limit = Math.min(200, parseInt(req.query.limit) || 100);
+  res.json(await store.listVisits(limit));
+});
+
+// Poora hisaab ek saath — dashboard ke liye
+app.get('/api/admin/overview', requireAdmin, async (req, res) => {
+  try {
+    const visits = await store.listVisits(5000);
+    const users = await store.listUsers();
+    const orders = await store.listAllOrders();
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+
+    const countBy = (arr, key) => {
+      const m = {};
+      for (const v of arr) { const k = v[key] || 'Unknown'; m[k] = (m[k] || 0) + 1; }
+      return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    };
+
+    // Pichhle 14 din — roz kitne visitors
+    const byDay = {};
+    for (let i = 13; i >= 0; i--)
+      byDay[new Date(now - i * 86400000).toISOString().slice(0, 10)] = 0;
+    for (const v of visits) {
+      const d = (v.visitedAt || '').slice(0, 10);
+      if (d in byDay) byDay[d]++;
+    }
+
+    const orderStatus = {};
+    for (const o of orders) orderStatus[o.status] = (orderStatus[o.status] || 0) + 1;
+
+    res.json({
+      totalVisits: visits.length,
+      uniqueVisitors: new Set(visits.map(v => v.ip)).size,
+      todayVisits: visits.filter(v => (v.visitedAt || '').slice(0, 10) === todayStr).length,
+      totalCustomers: users.length,
+      totalOrders: orders.length,
+      revenue: orders.filter(o => o.status !== 'Cancelled').reduce((s, o) => s + o.total, 0),
+      byDay,
+      byCountry: countBy(visits, 'country'),
+      byDevice: countBy(visits, 'device'),
+      byBrowser: countBy(visits, 'browser'),
+      byReferrer: countBy(visits.filter(v => v.referrer), 'referrer'),
+      orderStatus,
+      statuses: ORDER_STATUSES,
+    });
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Something went wrong' }); }
 });
 
 // ---------------- Start ----------------
