@@ -152,6 +152,9 @@ function createPgStore(pool) {
   const q = (text, params) => pool.query(text, params);
 
   // DB row → API book object
+  // NOTE: PostgreSQL TIMESTAMPTZ ko JS Date banakar deta hai — sabko ISO string
+  // me badal do taaki JSON store jaisa behavior rahe (warna .slice() crash karega)
+  const iso = v => (v instanceof Date ? v.toISOString() : v);
   const toBook = r => ({
     id: r.id, title: r.title, author: r.author, language: r.language,
     category: r.category, price: r.price, mrp: r.mrp, rating: Number(r.rating),
@@ -159,15 +162,15 @@ function createPgStore(pool) {
   });
   const toUser = r => ({
     id: r.id, username: r.username, email: r.email, phone: r.phone,
-    passwordHash: r.password_hash, createdAt: r.created_at,
-    lastSeen: r.last_seen || null,
+    passwordHash: r.password_hash, createdAt: iso(r.created_at),
+    lastSeen: r.last_seen ? iso(r.last_seen) : null,
   });
   const toOrder = r => ({
     id: r.id, userId: r.user_id,
     items: typeof r.items === 'string' ? JSON.parse(r.items) : r.items,
     subtotal: r.subtotal, delivery: r.delivery, total: r.total,
     name: r.name, address: r.address, city: r.city, pincode: r.pincode,
-    payment: r.payment, status: r.status, placedAt: r.placed_at,
+    payment: r.payment, status: r.status, placedAt: iso(r.placed_at),
   });
 
   return {
@@ -294,7 +297,7 @@ function createPgStore(pool) {
       return r.rows.map(x => ({
         id: x.id, userId: x.user_id, username: x.username, ip: x.ip,
         country: x.country, city: x.city, device: x.device, browser: x.browser,
-        os: x.os, referrer: x.referrer, page: x.page, visitedAt: x.visited_at,
+        os: x.os, referrer: x.referrer, page: x.page, visitedAt: iso(x.visited_at),
       }));
     },
     // ---- Order status ----
